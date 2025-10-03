@@ -15,6 +15,7 @@ maskbench.egg-info/top_level.txt
 src/common/env_utils.py
 src/common/eval_utils.py
 src/common/model_utils.py
+src/common/plot_utils.py
 src/masking/base_mask.py
 src/masking/channel_mask.py
 src/masking/random_mask.py

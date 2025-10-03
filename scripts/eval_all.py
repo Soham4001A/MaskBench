@@ -155,7 +155,7 @@ def main():
     parser.add_argument("--smoke", action="store_true", help="Run a smoke test.")
     parser.add_argument("--config-file", default="configs/mujoco_checkpoints.yaml", help="Path to the config file.")
     parser.add_argument("--episodes", type=int, default=1)
-    parser.add_argument("--max-steps", type=int, default=1000)
+    parser.add_argument("--max-steps", type=int, default=150_00)
     parser.add_argument("--ckpt_root", default="checkpoints/mujoco")
     parser.add_argument("--out-dir", default="outputs")
     args = parser.parse_args()

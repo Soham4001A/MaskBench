@@ -2,10 +2,10 @@ provider: sb3
 envs:
   Ant-v3:
     a2c:
-      hf_repo: sb3/a2c-Ant-v5
+      hf_repo: sb3/a2c-Ant-v3
       url: https://huggingface.co/sb3/a2c-Ant-v3
     ppo:
-      hf_repo: sb3/ppo-Ant-v5
+      hf_repo: sb3/ppo-Ant-v3
       url: https://huggingface.co/sb3/ppo-Ant-v3
     sac:
       hf_repo: sb3/sac-Ant-v3
