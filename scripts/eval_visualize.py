@@ -3,6 +3,12 @@ import os
 import argparse
 import numpy as np
 from gymnasium import spaces
+import cv2
+import io
+import matplotlib.pyplot as plt
+
+from stable_baselines3.common.vec_env import VecNormalize
+from stable_baselines3.common.running_mean_std import RunningMeanStd
 
 from src.common.env_utils import make_env, get_vecnormalize_path
 from src.common.model_utils import load_sb3_model
@@ -39,6 +45,47 @@ def unwrap_vecnormalize(env):
         v = getattr(v, "venv", None)
     return None
 
+def render_animated_sweep_frame(all_rewards, current_rewards, animated_prob, env_frame, title):
+    plt.figure(figsize=(8, 6))
+    colors = plt.cm.viridis(np.linspace(0, 1, len(all_rewards)))
+    
+    negative_trending = sum(1 for r in all_rewards.values() if np.sum(r) < 0) > len(all_rewards) / 2
+
+    for i, (prob, rewards) in enumerate(all_rewards.items()):
+        if prob == animated_prob:
+            continue
+        linestyle = 'dotted' if prob == 0.0 else '-'
+        plt.plot(np.cumsum(rewards), label=f'p={prob}', color=colors[i], linestyle=linestyle, alpha=0.5)
+    
+    # Plot the animated run
+    animated_color = colors[list(all_rewards.keys()).index(animated_prob)]
+    linestyle = 'dotted' if animated_prob == 0.0 else '-'
+    plt.plot(np.cumsum(current_rewards), label=f'p={animated_prob} (current)', color=animated_color, linestyle=linestyle, linewidth=2)
+
+    if negative_trending:
+        plt.gca().invert_yaxis()
+
+    plt.xlabel("Steps")
+    plt.ylabel("Cumulative Reward")
+    plt.title(title)
+    plt.legend()
+    plt.grid(True)
+    
+    # Convert plot to image
+    buf = io.BytesIO()
+    plt.savefig(buf, format="png")
+    plt.close()
+    buf.seek(0)
+    plot_img = cv2.imdecode(np.frombuffer(buf.getvalue(), np.uint8), cv2.IMREAD_COLOR)
+
+    # Combine with env_frame
+    env_frame = cv2.cvtColor(env_frame, cv2.COLOR_RGB2BGR)
+    env_frame = cv2.resize(env_frame, (640, 720))
+    plot_img = cv2.resize(plot_img, (640, 720))
+    
+    mosaic = np.hstack([env_frame, plot_img])
+    return mosaic
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--env-id", required=True)
@@ -48,6 +95,7 @@ def main():
     parser.add_argument("--max-steps", type=int, default=1000)
     parser.add_argument("--ckpt_root", default="checkpoints/mujoco")
     parser.add_argument("--out", default="outputs/sweep.png")
+    parser.add_argument("--video-out", default="outputs/videos/preview.mp4")
     args = parser.parse_args()
 
     model_dir = os.path.join(args.ckpt_root, args.env_id, args.algo)
@@ -149,6 +197,67 @@ def main():
 
     title = f"{args.algo}-{args.mask_type}"
     render_sweep_plot(all_rewards, args.out, title)
+
+    # --- Animation loop ---
+    print("Generating animation for baseline run...")
+    
+    video_out = args.video_out
+    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+    os.makedirs(os.path.dirname(video_out), exist_ok=True)
+    vw = cv2.VideoWriter(video_out, fourcc, 30, (1280, 720))
+
+    animated_prob = 0.0
+    masker = build_masker(args.mask_type, p=animated_prob)
+    
+    obs = env.reset()
+    current_rewards = []
+    for step in range(args.max_steps):
+        if isinstance(obs, np.ndarray) and obs.ndim == 1:
+            masked_obs = masker.maybe_apply(obs.astype(np.float32, copy=False))
+        else:
+            masked_obs = np.asarray(obs, dtype=np.float32).copy()
+            masked_obs[0] = masker.maybe_apply(masked_obs[0])
+
+        batched_obs = as_vec_obs(masked_obs)
+
+        expected_shape = original_obs_space.shape[0]
+        if batched_obs.shape[1] < expected_shape:
+            padding = np.zeros((batched_obs.shape[0], expected_shape - batched_obs.shape[1]), dtype=np.float32)
+            batched_obs = np.concatenate([batched_obs, padding], axis=1)
+
+        original_space = model.observation_space
+        padded_space = spaces.Box(low=-np.inf, high=np.inf, shape=(expected_shape,), dtype=np.float32)
+        model.observation_space = padded_space
+        model.policy.observation_space = padded_space
+
+        action, _ = model.predict(batched_obs, deterministic=True)
+
+        model.observation_space = original_space
+        model.policy.observation_space = original_space
+
+        act = np.asarray(action, dtype=np.float32)
+        if act.ndim == 1:
+            act = act[None, ...]
+        
+        step_result = env.step(act)
+        if len(step_result) == 5:
+            next_obs, reward, terminated, truncated, info = step_result
+            done = terminated | truncated
+        else:
+            next_obs, reward, done, info = step_result
+        current_rewards.append(float(np.mean(reward)))
+
+        env_frame = env.render()
+        frame = render_animated_sweep_frame(all_rewards, current_rewards, animated_prob, env_frame, title)
+        vw.write(frame)
+
+        obs = next_obs
+
+        if done.any():
+            obs = env.reset()
+
+    vw.release()
+    print(f"Saved animation to {video_out}")
 
 if __name__ == "__main__":
     main()
