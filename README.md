@@ -97,6 +97,7 @@ MaskBench/
 python -m venv .venv
 source .venv/bin/activate  # Windows: .venv\Scripts\activate
 pip install --upgrade pip
+pip install -e .
 pip install -r requirements.txt  # provide SB3, gymnasium[mujoco], numpy, opencv-python, matplotlib, pillow
 ```
 

@@ -9,5 +9,5 @@ requires = ["setuptools>=61"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
-packages = ["src", "src.common", "src.masking", "src.common.plot_utils"]
+packages = ["src", "src.common", "src.masking"]
 package-dir = {"" = "."}
