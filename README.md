@@ -187,7 +187,7 @@ Construction when (U_t=1):
   0, & i\in S_t, \
   1, & i\notin S_t.
   \end{cases}
-]
+  ]
 * Masked obs: (\tilde{\mathbf{x}}_t = \mathbf{x}_t \odot \mathbf{m}_t).
 
 **Expected zeros per step:** (\mathbb{E}[Z_t] = p,r,D).
@@ -219,7 +219,7 @@ Variance differs:
 * **RandomMask** adds binomial variance given (U_t=1): (Z_t,|,U_t=1 \sim \mathrm{Binomial}(D, r)), so
   [
   \mathrm{Var}(Z_t) = p, D r(1-r) + p(1-p) (rD)^2.
-]
+  ]
   This higher variance can stress policies differently than channel‑level masking.
 
 ### Mask scheduling
@@ -339,11 +339,119 @@ PYTHONPATH="/Users/sohamsane/Documents/Coding Projects/MaskBench" "/Users/sohams
   --video-out outputs/videos/ant_ppo_channel_baseline.mp4
 ```
 
-**Notes**:
+### `scripts/make_plot_sheet.py`
 
-*   Default `drop_ratio` is defined inside each masker (currently `0.3`). You can change it in code or extend CLI to expose `--drop-ratio`.
-*   Checkpoints are searched under `checkpoints/mujoco/<ENV>/<ALGO>/`.
-*   **ARS Algorithm**: Currently, `ARS` policies are skipped in `eval_all.py` due to compatibility issues with `model.predict()`.
+This script combines all generated plots for a given environment into a single large image.
+
+```bash
+PYTHONPATH="/Users/sohamsane/Documents/Coding Projects/MaskBench" "/Users/sohamsane/Documents/Coding Projects/MaskBench/.venv/bin/python" scripts/make_plot_sheet.py [OPTIONS]
+```
+
+**Options:**
+
+*   `--env-id ENV_ID`: Environment ID (e.g., `Ant-v3`).
+*   `--output-file PATH`: Output path for the combined plot sheet (default: `outputs/plot_sheet.png`).
+
+**Example:**
+
+```bash
+PYTHONPATH="/Users/sohamsane/Documents/Coding Projects/MaskBench" "/Users/sohamsane/Documents/Coding Projects/MaskBench/.venv/bin/python" scripts/make_plot_sheet.py \
+  --env-id Ant-v3 \
+  --output-file outputs/Ant-v3_all_plots.png
+```
+
+**Checkpoint layout** (default search path):
+
+```
+checkpoints/mujoco/<ENV>/<ALGO>/
+  ├─ model.zip              # SB3 policy
+  └─ vec_normalize.pkl      # (optional) normalization stats
+```
+
+If `vec_normalize.pkl` is absent in `<ALGO>/`, MaskBench also checks the parent folder.
+
+---
+
+## Concepts & Mathematics
+
+### Observation masking model
+
+Let the (row) observation at step (t) be (\mathbf{x}_t \in \mathbb{R}^D). A binary mask (\mathbf{m}_t \in {0,1}^D) is sampled, and the masked observation is
+[
+\tilde{\mathbf{x}}_t = \mathbf{m}_t \odot \mathbf{x}_t,\quad \text{where } \odot \text{ is Hadamard product.}
+]
+MaskBench draws a Bernoulli switch per step:
+[
+U_t \sim \mathrm{Bernoulli}(p), \quad p \in [0,1],
+]
+where (p) is the **masking probability**. If (U_t=0), we set (\mathbf{m}_t=\mathbf{1}) and leave (\mathbf{x}_t) unchanged. If (U_t=1), we construct (\mathbf{m}_t) according to the selected masker with **severity** parameter (r\in[0,1]) (the *drop ratio*).
+
+We maintain shape and dtype invariants:
+
+* Input/Output shape: `(D,)` or `(N,D)` in batched form.
+* Dtype: `float32` throughout the SB3 path.
+
+### ChannelMask
+
+**Intuition:** entire *features/channels* go down at once (e.g., a sensor bus drops specific indices).
+
+Construction when (U_t=1):
+
+* Sample a subset (S_t \subseteq [D] = {1,\dots,D}) with (|S_t| = \lfloor r D \rfloor), uniformly without replacement.
+* Define
+  [
+  (\mathbf{m}_t)_i = \begin{cases}
+  0, & i\in S_t, \
+  1, & i\notin S_t.
+  \end{cases}
+  ]
+* Masked obs: (\tilde{\mathbf{x}}_t = \mathbf{x}_t \odot \mathbf{m}_t).
+
+**Expected zeros per step:** (\mathbb{E}[Z_t] = p,r,D).
+
+**Correlation structure:** entries masked **within a step** are *perfectly correlated* (entire chosen channels are zeroed together). Across steps, selections are i.i.d. unless a schedule is used.
+
+### RandomMask
+
+**Intuition:** each entry can flicker independently, modeling fine‑grained packet loss or per‑feature dropouts.
+
+Construction when (U_t=1):
+
+* For each feature (i\in [D]), draw (B_{t,i} \sim \mathrm{Bernoulli}(q)) with (q=r).
+* Set ((\mathbf{m}_t)*i = 1 - B*{t,i}) and compute (\tilde{\mathbf{x}}_t = \mathbf{x}_t \odot \mathbf{m}_t).
+
+**Expected zeros per step:** (\mathbb{E}[Z_t] = p,q,D = p,r,D).
+
+**Correlation structure:** entries are **independent** given (U_t=1), so masking is spatially uncorrelated (unlike ChannelMask).
+
+### Effective masking rate and variance
+
+Over many steps, the expected fraction of zeroed entries is
+[
+\rho_{\mathrm{eff}} \approx p, r.
+]
+Variance differs:
+
+* **ChannelMask (without replacement)**, for (U_t=1): (Z_t = |S_t|) is (approximately) deterministic at (rD) (ignoring the floor), so per‑step variance arises only from (U_t).
+* **RandomMask** adds binomial variance given (U_t=1): (Z_t,|,U_t=1 \sim \mathrm{Binomial}(D, r)), so
+  [
+  \mathrm{Var}(Z_t) = p, D r(1-r) + p(1-p) (rD)^2.
+  ]
+  This higher variance can stress policies differently than channel‑level masking.
+
+### Mask scheduling
+
+Instead of a fixed (p), you can run schedules, e.g. linear warm‑up:
+[
+p(t) = \min!\left(p_{\max},; p_0 + \alpha t\right),
+]
+or cosine schedules. Severity (r) can be scheduled similarly. Scheduling is useful when gradually stress‑testing or training with curriculum.
+
+### POMDP view & intuition
+
+Masking transforms an MDP into a **POMDP**: the agent receives (\tilde{\mathbf{x}}_t) instead of the full (\mathbf{x}_t). ChannelMask models *structured* partial observability (entire sensors go missing); RandomMask models *unstructured* noise‑like missingness.
+
+* **Why this matters:** robust policies should either (a) carry stronger belief state (RNNs/filters), or (b) learn redundancies and invariances across features. Evaluation under controlled (p,r) makes these gaps visible.
 
 ---
 
@@ -356,6 +464,10 @@ PYTHONPATH="/Users/sohamsane/Documents/Coding Projects/MaskBench" "/Users/sohams
 ### My Ant‑v3 policy still won’t run on v5
 
 *   Use the built‑in **adapter** that pads/slices to the model’s input width (already wired). For rigorous comparisons, train & eval on the **same** env version.
+
+### ARS Algorithm Compatibility
+
+*   Currently, `ARS` policies are skipped in `eval_all.py` due to compatibility issues with `model.predict()`.
 
 ---
 
