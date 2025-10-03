@@ -1,0 +1,10 @@
+mask_probs:
+- 0.0
+- 0.25
+- 0.5
+- 0.75
+- 1.0
+mask_before_normalize: true
+episodes: 10
+max_steps: 1000
+seed: 0

@@ -1,0 +1,98 @@
+provider: sb3
+envs:
+  Ant-v3:
+    a2c:
+      hf_repo: sb3/a2c-Ant-v5
+      url: https://huggingface.co/sb3/a2c-Ant-v3
+    ppo:
+      hf_repo: sb3/ppo-Ant-v5
+      url: https://huggingface.co/sb3/ppo-Ant-v3
+    sac:
+      hf_repo: sb3/sac-Ant-v3
+      url: https://huggingface.co/sb3/sac-Ant-v3
+    td3:
+      hf_repo: sb3/td3-Ant-v3
+      url: https://huggingface.co/sb3/td3-Ant-v3
+    trpo:
+      hf_repo: sb3/trpo-Ant-v3
+      url: https://huggingface.co/sb3/trpo-Ant-v3
+    ars:
+      hf_repo: sb3/ars-Ant-v3
+      url: https://huggingface.co/sb3/ars-Ant-v3
+  Hopper-v3:
+    a2c:
+      hf_repo: sb3/a2c-Hopper-v3
+      url: https://huggingface.co/sb3/a2c-Hopper-v3
+    ppo:
+      hf_repo: sb3/ppo-Hopper-v3
+      url: https://huggingface.co/sb3/ppo-Hopper-v3
+    sac:
+      hf_repo: sb3/sac-Hopper-v3
+      url: https://huggingface.co/sb3/sac-Hopper-v3
+    tqc:
+      hf_repo: sb3/tqc-Hopper-v3
+      url: https://huggingface.co/sb3/tqc-Hopper-v3
+    ars:
+      hf_repo: sb3/ars-Hopper-v3
+      url: https://huggingface.co/sb3/ars-Hopper-v3
+  Walker2d-v3:
+    a2c:
+      hf_repo: sb3/a2c-Walker2d-v3
+      url: https://huggingface.co/sb3/a2c-Walker2d-v3
+    ppo:
+      hf_repo: sb3/ppo-Walker2d-v3
+      url: https://huggingface.co/sb3/ppo-Walker2d-v3
+    sac:
+      hf_repo: sb3/sac-Walker2d-v3
+      url: https://huggingface.co/sb3/sac-Walker2d-v3
+    td3:
+      hf_repo: sb3/td3-Walker2d-v3
+      url: https://huggingface.co/sb3/td3-Walker2d-v3
+    tqc:
+      hf_repo: sb3/tqc-Walker2d-v3
+      url: https://huggingface.co/sb3/tqc-Walker2d-v3
+    trpo:
+      hf_repo: sb3/trpo-Walker2d-v3
+      url: https://huggingface.co/sb3/trpo-Walker2d-v3
+  HalfCheetah-v3:
+    a2c:
+      hf_repo: sb3/a2c-HalfCheetah-v3
+      url: https://huggingface.co/sb3/a2c-HalfCheetah-v3
+    ppo:
+      hf_repo: sb3/ppo-HalfCheetah-v3
+      url: https://huggingface.co/sb3/ppo-HalfCheetah-v3
+    sac:
+      hf_repo: sb3/sac-HalfCheetah-v3
+      url: https://huggingface.co/sb3/sac-HalfCheetah-v3
+    td3:
+      hf_repo: sb3/td3-HalfCheetah-v3
+      url: https://huggingface.co/sb3/td3-HalfCheetah-v3
+    trpo:
+      hf_repo: sb3/trpo-HalfCheetah-v3
+      url: https://huggingface.co/sb3/trpo-HalfCheetah-v3
+  Humanoid-v3:
+    a2c:
+      hf_repo: sb3/a2c-Humanoid-v3
+      url: https://huggingface.co/sb3/a2c-Humanoid-v3
+    sac:
+      hf_repo: sb3/sac-Humanoid-v3
+      url: https://huggingface.co/sb3/sac-Humanoid-v3
+    tqc:
+      hf_repo: sb3/tqc-Humanoid-v3
+      url: https://huggingface.co/sb3/tqc-Humanoid-v3
+  Swimmer-v3:
+    a2c:
+      hf_repo: sb3/a2c-Swimmer-v3
+      url: https://huggingface.co/sb3/a2c-Swimmer-v3
+    ppo:
+      hf_repo: sb3/ppo-Swimmer-v3
+      url: https://huggingface.co/sb3/ppo-Swimmer-v3
+    sac:
+      hf_repo: sb3/sac-Swimmer-v3
+      url: https://huggingface.co/sb3/sac-Swimmer-v3
+    trpo:
+      hf_repo: sb3/trpo-Swimmer-v3
+      url: https://huggingface.co/sb3/trpo-Swimmer-v3
+    ars:
+      hf_repo: sb3/ars-Swimmer-v3
+      url: https://huggingface.co/sb3/ars-Swimmer-v3
