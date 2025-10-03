@@ -1,125 +1,176 @@
 #!/usr/bin/env python3
-import argparse, os, yaml, glob, json
+import argparse
+import yaml
+import os
 import numpy as np
-import pandas as pd
-import matplotlib.pyplot as plt
+from gymnasium import spaces
+
+from stable_baselines3.common.vec_env import VecNormalize
+from stable_baselines3.common.running_mean_std import RunningMeanStd
 
 from src.common.env_utils import make_env, get_vecnormalize_path
 from src.common.model_utils import load_sb3_model
-from src.common.eval_utils import evaluate_model, sweep_mask_probs
-from src.masking.channel_mask import ChannelMask
-from src.masking.random_mask import RandomMask
+from src.common.plot_utils import render_sweep_plot
 
 def build_masker(mask_type: str, p: float):
     if mask_type == "channel":
+        from src.masking.channel_mask import ChannelMask
         return ChannelMask(p=p, drop_ratio=0.3)
     elif mask_type == "randomized":
+        from src.masking.random_mask import RandomMask
         return RandomMask(p=p, drop_ratio=0.3)
     else:
         raise ValueError(f"Unknown mask_type: {mask_type}")
 
-def apply_mask_to_obs(obs, masker):
-    # obs is (1, obs_dim) because of VecEnv
-    vec = obs.copy()
-    masked = masker.maybe_apply(vec[0])
-    vec[0] = masked
-    return vec
+def as_vec_obs(obs, target_space=None):
+    x = np.asarray(obs, dtype=np.float32)
+    if x.ndim == 1:
+        x = x[None, ...]
+    elif x.ndim > 2 and x.shape[0] == 1:
+        x = np.squeeze(x, axis=0)
+        if x.ndim == 1:
+            x = x[None, ...]
+    return x
+
+def unwrap_vecnormalize(env):
+    v = env
+    visited = set()
+    while v is not None and id(v) not in visited:
+        visited.add(id(v))
+        if isinstance(v, VecNormalize):
+            return v
+        v = getattr(v, "venv", None)
+    return None
+
+def run_sweep_for_model(env_id, algo, mask_type, episodes, max_steps, ckpt_root, out_dir, smoke):
+    model_dir = os.path.join(ckpt_root, env_id, algo)
+    assert os.path.isdir(model_dir), f"Missing model dir: {model_dir}"
+
+    vecnorm_path = get_vecnormalize_path(model_dir)
+    env = make_env(env_id, seed=0, vecnorm_path=vecnorm_path)
+
+    if isinstance(env.observation_space, spaces.Box) and env.observation_space.dtype != np.float32:
+        new_space = spaces.Box(
+            low=env.observation_space.low.astype(np.float32),
+            high=env.observation_space.high.astype(np.float32),
+            shape=env.observation_space.shape,
+            dtype=np.float32,
+        )
+        env.observation_space = new_space
+
+    try:
+        vn = unwrap_vecnormalize(env)
+        if vn is not None:
+            norm_obs_backup, norm_reward_backup = vn.norm_obs, vn.norm_reward
+            vn.norm_obs, vn.norm_reward = False, False
+
+            expected_obs_shape = tuple(vn.venv.observation_space.shape)
+            current_obs_shape = tuple(getattr(getattr(vn, "obs_rms", None), "mean", np.array([])).shape)
+
+            if current_obs_shape != expected_obs_shape or vn.observation_space.dtype != np.float32:
+                new_space = spaces.Box(
+                    low=vn.venv.observation_space.low.astype(np.float32),
+                    high=vn.venv.observation_space.high.astype(np.float32),
+                    shape=expected_obs_shape,
+                    dtype=np.float32,
+                )
+                vn.observation_space = new_space
+                vn.obs_rms = RunningMeanStd(shape=expected_obs_shape)
+                vn.ret_rms = RunningMeanStd(shape=())
+
+            vn.norm_obs, vn.norm_reward = norm_obs_backup, norm_reward_backup
+            vn.training = False
+    except Exception as e:
+        print(f"[MaskBench] VecNormalize unwrap/fix skipped due to: {e}")
+
+    algo, model, original_obs_space = load_sb3_model(model_dir, env)
+
+    if smoke:
+        sweep_probs = [0.0]
+        max_steps = 10
+    else:
+        sweep_probs = [0.0, 0.2, 0.4, 0.6, 0.8, 1.0]
+
+    all_rewards = {}
+
+    for prob in sweep_probs:
+        print(f"Running sweep for mask_prob={prob}...")
+        masker = build_masker(mask_type, p=prob)
+        
+        episode_rewards = []
+        for ep in range(episodes):
+            obs = env.reset()
+            rewards = []
+            for step in range(max_steps):
+                if isinstance(obs, np.ndarray) and obs.ndim == 1:
+                    masked_obs = masker.maybe_apply(obs.astype(np.float32, copy=False))
+                else:
+                    masked_obs = np.asarray(obs, dtype=np.float32).copy()
+                    masked_obs[0] = masker.maybe_apply(masked_obs[0])
+
+                batched_obs = as_vec_obs(masked_obs)
+
+                expected_shape = original_obs_space.shape[0]
+                if batched_obs.shape[1] < expected_shape:
+                    padding = np.zeros((batched_obs.shape[0], expected_shape - batched_obs.shape[1]), dtype=np.float32)
+                    batched_obs = np.concatenate([batched_obs, padding], axis=1)
+
+                original_space = model.observation_space
+                padded_space = spaces.Box(low=-np.inf, high=np.inf, shape=(expected_shape,), dtype=np.float32)
+                model.observation_space = padded_space
+                model.policy.observation_space = padded_space
+
+                action, _ = model.predict(batched_obs, deterministic=True)
+
+                model.observation_space = original_space
+                model.policy.observation_space = original_space
+
+                act = np.asarray(action, dtype=np.float32)
+                if act.ndim == 1:
+                    act = act[None, ...]
+                
+                step_result = env.step(act)
+                if len(step_result) == 5:
+                    next_obs, reward, terminated, truncated, info = step_result
+                    done = terminated | truncated
+                else:
+                    next_obs, reward, done, info = step_result
+                rewards.append(float(np.mean(reward)))
+                obs = next_obs
+
+                if done.any():
+                    obs = env.reset()
+            episode_rewards.append(rewards)
+        
+        mean_rewards = np.mean(episode_rewards, axis=0)
+        all_rewards[prob] = mean_rewards
+
+    title = f"{algo}-{mask_type}"
+    out_path = os.path.join(out_dir, env_id, f"{title}.png")
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
+    render_sweep_plot(all_rewards, out_path, title)
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--env-id", required=True)
-    parser.add_argument("--episodes", type=int, default=10)
+    parser.add_argument("--smoke", action="store_true", help="Run a smoke test.")
+    parser.add_argument("--config-file", default="configs/mujoco_checkpoints.yaml", help="Path to the config file.")
+    parser.add_argument("--episodes", type=int, default=1)
     parser.add_argument("--max-steps", type=int, default=1000)
-    parser.add_argument("--eval-config", default="configs/eval_config.yaml")
     parser.add_argument("--ckpt_root", default="checkpoints/mujoco")
+    parser.add_argument("--out-dir", default="outputs")
     args = parser.parse_args()
 
-    with open(args.eval_config, "r") as f:
-        econf = yaml.safe_load(f)
-    probs = econf.get("mask_probs", [0.0, 0.25, 0.5, 0.75, 1.0])
+    with open(args.config_file, "r") as f:
+        config = yaml.safe_load(f)
 
-    env_dir = os.path.join(args.ckpt_root, args.env_id)
-    algo_dirs = sorted(glob.glob(os.path.join(env_dir, "*")))
-    assert algo_dirs, f"No checkpoints found under {env_dir}"
-
-    results_dir = "outputs/results_csv"
-    plots_dir = "outputs/plots"
-    os.makedirs(results_dir, exist_ok=True)
-    os.makedirs(plots_dir, exist_ok=True)
-
-    summary_tables = []
-    for algo_path in algo_dirs:
-        algo_name = os.path.basename(algo_path)
-        # Build env with potential VecNormalize
-        vecnorm_path = os.path.join(algo_path, "vec_normalize.pkl")
-        env = make_env(args.env_id, seed=0, vecnorm_path=vecnorm_path)
-
-        # Baseline (0.0 mask)
-        def run_with_mask(p, mask_type="channel"):
-            # Wrap step loop to inject masking into obs
-            # We'll monkey-patch env.step to apply mask right after step
-            from types import MethodType
-            masker = build_masker(mask_type, p)
-
-            orig_reset = env.reset
-            orig_step = env.step
-
-            def reset_with_mask(*a, **kw):
-                obs, info = orig_reset(*a, **kw)
-                obs = apply_mask_to_obs(obs, masker)
-                return obs, info
-
-            def step_with_mask(action):
-                obs, rew, term, trunc, info = orig_step(action)
-                obs = apply_mask_to_obs(obs, masker)
-                return obs, rew, term, trunc, info
-
-            env.reset = MethodType(reset_with_mask, env)
-            env.step = MethodType(step_with_mask, env)
-
-            algo, model = load_sb3_model(algo_path, env)
-            metrics = evaluate_model(model, env, episodes=args.episodes, max_steps=args.max_steps)
-
-            # Restore
-            env.reset = orig_reset
-            env.step = orig_step
-            return metrics
-
-        # Run both mask types + baseline
-        df_channel = sweep_mask_probs(lambda p: run_with_mask(p, "channel"), probs)
-        df_channel["algo"] = algo_name
-        df_channel["mask_type"] = "channel"
-
-        df_random = sweep_mask_probs(lambda p: run_with_mask(p, "randomized"), probs)
-        df_random["algo"] = algo_name
-        df_random["mask_type"] = "randomized"
-
-        df = pd.concat([df_channel, df_random], ignore_index=True)
-        csv_path = os.path.join(results_dir, f"{args.env_id}_{algo_name}.csv")
-        df.to_csv(csv_path, index=False)
-        summary_tables.append(df)
-
-    # Plot: per algo, lines over mask_prob; dashed for baseline overlay
-    all_df = pd.concat(summary_tables, ignore_index=True)
-    for mtype in ["channel", "randomized"]:
-        plt.figure(figsize=(8,5))
-        for algo in sorted(all_df["algo"].unique()):
-            sub = all_df[(all_df["algo"]==algo) & (all_df["mask_type"]==mtype)]
-            plt.plot(sub["mask_prob"], sub["mean_return"], label=algo)
-            # Baseline as dashed horizontal line at p=0
-            base_val = sub[sub["mask_prob"]==0.0]["mean_return"].values
-            if base_val.size>0:
-                plt.hlines(base_val[0], 0, 1.0, linestyles="dashed")
-        plt.title(f"{args.env_id} – {mtype} mask")
-        plt.xlabel("Mask probability")
-        plt.ylabel("Mean return")
-        plt.legend()
-        outp = os.path.join(plots_dir, f"{args.env_id}_{mtype}.png")
-        plt.tight_layout()
-        plt.savefig(outp)
-        plt.close()
-
-    print(f"Saved CSVs to {results_dir} and plots to {plots_dir}")
+    for env_id, algos in config["envs"].items():
+        for algo, details in algos.items():
+            for mask_type in ["channel", "randomized"]:
+                if algo == "ars":
+                    print(f"--- Skipping {env_id} - {algo} - {mask_type} (ARS policy not directly compatible with model.predict()) ---")
+                    continue
+                print(f"--- Running {env_id} - {algo} - {mask_type} ---")
+                run_sweep_for_model(env_id, algo, mask_type, args.episodes, args.max_steps, args.ckpt_root, args.out_dir, args.smoke)
 
 if __name__ == "__main__":
     main()

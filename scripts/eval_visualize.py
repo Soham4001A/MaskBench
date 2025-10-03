@@ -1,23 +1,12 @@
 #!/usr/bin/env python3
-import argparse, os, io
+import argparse
 import numpy as np
-import cv2
-import matplotlib.pyplot as plt
 from gymnasium import spaces
-from stable_baselines3.common.vec_env import VecNormalize
-from stable_baselines3.common.running_mean_std import RunningMeanStd
 
 from src.common.env_utils import make_env, get_vecnormalize_path
 from src.common.model_utils import load_sb3_model
 from src.masking.utils import mask_table
-
-
-def to_single_obs(obs):
-    """Return a single (unbatched) float32 observation for SB3 predict()."""
-    x = np.asarray(obs)
-    if x.ndim > 1:
-        x = x[0]
-    return x.astype(np.float32, copy=False)
+from src.common.plot_utils import render_sweep_plot
 
 def build_masker(mask_type: str, p: float):
     if mask_type == "channel":
@@ -29,108 +18,17 @@ def build_masker(mask_type: str, p: float):
     else:
         raise ValueError(f"Unknown mask_type: {mask_type}")
 
-
-def render_sweep_plot(all_rewards, out_path):
-    plt.figure(figsize=(8, 6))
-    colors = plt.cm.viridis(np.linspace(0, 1, len(all_rewards)))
-    
-    # Find max length
-    max_len = 0
-    for rewards in all_rewards.values():
-        if len(rewards) > max_len:
-            max_len = len(rewards)
-
-    negative_trending = sum(1 for r in all_rewards.values() if np.sum(r) < 0) > len(all_rewards) / 2
-
-    for i, (prob, rewards) in enumerate(all_rewards.items()):
-        linestyle = 'dotted' if prob == 0.0 else '-'
-        plt.plot(np.cumsum(rewards), label=f'p={prob}', color=colors[i], linestyle=linestyle)
-    
-    if negative_trending:
-        plt.gca().invert_yaxis()
-
-    plt.xlabel("Steps")
-    plt.ylabel("Cumulative Reward")
-    plt.title("Masking Probability Sweep")
-    plt.legend()
-    plt.grid(True)
-    plt.savefig(out_path)
-    plt.close()
-    print(f"Saved sweep plot to {out_path}")
-
-
-def render_animated_sweep_frame(all_rewards, current_rewards, animated_prob, env_frame):
-    # Create the plot
-    plt.figure(figsize=(8, 6))
-    colors = plt.cm.viridis(np.linspace(0, 1, len(all_rewards)))
-    
-    # Find max length
-    max_len = 0
-    for rewards in all_rewards.values():
-        if len(rewards) > max_len:
-            max_len = len(rewards)
-
-    negative_trending = sum(1 for r in all_rewards.values() if np.sum(r) < 0) > len(all_rewards) / 2
-
-    for i, (prob, rewards) in enumerate(all_rewards.items()):
-        if prob == animated_prob:
-            continue
-        linestyle = 'dotted' if prob == 0.0 else '-'
-        plt.plot(np.cumsum(rewards), label=f'p={prob}', color=colors[i], linestyle=linestyle, alpha=0.5)
-    
-    # Plot the animated run
-    animated_color = colors[list(all_rewards.keys()).index(animated_prob)]
-    linestyle = 'dotted' if animated_prob == 0.0 else '-'
-    plt.plot(np.cumsum(current_rewards), label=f'p={animated_prob} (current)', color=animated_color, linestyle=linestyle, linewidth=2)
-
-    if negative_trending:
-        plt.gca().invert_yaxis()
-
-    plt.xlabel("Steps")
-    plt.ylabel("Cumulative Reward")
-    plt.title("Masking Probability Sweep")
-    plt.legend()
-    plt.grid(True)
-    
-    # Convert plot to image
-    buf = io.BytesIO()
-    plt.savefig(buf, format="png")
-    plt.close()
-    buf.seek(0)
-    plot_img = cv2.imdecode(np.frombuffer(buf.getvalue(), np.uint8), cv2.IMREAD_COLOR)
-
-    # Combine with env_frame
-    env_frame = cv2.cvtColor(env_frame, cv2.COLOR_RGB2BGR)
-    env_frame = cv2.resize(env_frame, (640, 720))
-    plot_img = cv2.resize(plot_img, (640, 720))
-    
-    mosaic = np.hstack([env_frame, plot_img])
-    return mosaic
-
-
 def as_vec_obs(obs, target_space=None):
-    """
-    Ensure observation is batched (N, ...) and float32 for SB3.
-    This avoids 'cannot determine if the observation is vectorized' errors.
-    """
-    # Force early casting to avoid object-dtype ragged arrays
     x = np.asarray(obs, dtype=np.float32)
-    # If unbatched 1D, add batch dim
     if x.ndim == 1:
         x = x[None, ...]
-    # In rare cases, extra dims may appear due to wrappers; try a gentle squeeze
     elif x.ndim > 2 and x.shape[0] == 1:
         x = np.squeeze(x, axis=0)
         if x.ndim == 1:
             x = x[None, ...]
     return x
 
-
 def unwrap_vecnormalize(env):
-    """
-    Walk down .venv chain to find a VecNormalize instance if present.
-    Returns the VecNormalize instance or None.
-    """
     v = env
     visited = set()
     while v is not None and id(v) not in visited:
@@ -139,7 +37,6 @@ def unwrap_vecnormalize(env):
             return v
         v = getattr(v, "venv", None)
     return None
-
 
 def main():
     parser = argparse.ArgumentParser()
@@ -150,7 +47,6 @@ def main():
     parser.add_argument("--max-steps", type=int, default=1000)
     parser.add_argument("--ckpt_root", default="checkpoints/mujoco")
     parser.add_argument("--out", default="outputs/sweep.png")
-    parser.add_argument("--video-out", default="outputs/videos/preview.mp4")
     args = parser.parse_args()
 
     model_dir = os.path.join(args.ckpt_root, args.env_id, args.algo)
@@ -159,7 +55,6 @@ def main():
     vecnorm_path = get_vecnormalize_path(model_dir)
     env = make_env(args.env_id, seed=0, vecnorm_path=vecnorm_path)
 
-    # --- Force float32 observation space ---
     if isinstance(env.observation_space, spaces.Box) and env.observation_space.dtype != np.float32:
         new_space = spaces.Box(
             low=env.observation_space.low.astype(np.float32),
@@ -169,11 +64,9 @@ def main():
         )
         env.observation_space = new_space
 
-    # --- Fix VecNormalize stats if shape mismatches (e.g., Ant-v3 vs v5 upgrade) ---
     try:
         vn = unwrap_vecnormalize(env)
         if vn is not None:
-            # Temporarily disable normalization to allow re-initialization
             norm_obs_backup, norm_reward_backup = vn.norm_obs, vn.norm_reward
             vn.norm_obs, vn.norm_reward = False, False
 
@@ -181,8 +74,6 @@ def main():
             current_obs_shape = tuple(getattr(getattr(vn, "obs_rms", None), "mean", np.array([])).shape)
 
             if current_obs_shape != expected_obs_shape or vn.observation_space.dtype != np.float32:
-                print(f"[MaskBench] Reinitializing VecNormalize: stats shape {current_obs_shape} != env shape {expected_obs_shape} or dtype {vn.observation_space.dtype} != float32")
-                # Fix observation space on VecNormalize wrapper
                 new_space = spaces.Box(
                     low=vn.venv.observation_space.low.astype(np.float32),
                     high=vn.venv.observation_space.high.astype(np.float32),
@@ -190,14 +81,10 @@ def main():
                     dtype=np.float32,
                 )
                 vn.observation_space = new_space
-                # Fix running stats
                 vn.obs_rms = RunningMeanStd(shape=expected_obs_shape)
                 vn.ret_rms = RunningMeanStd(shape=())
 
-            # Restore normalization settings
             vn.norm_obs, vn.norm_reward = norm_obs_backup, norm_reward_backup
-            
-            # evaluation mode
             vn.training = False
     except Exception as e:
         print(f"[MaskBench] VecNormalize unwrap/fix skipped due to: {e}")
@@ -259,70 +146,8 @@ def main():
         mean_rewards = np.mean(episode_rewards, axis=0)
         all_rewards[prob] = mean_rewards
 
-    render_sweep_plot(all_rewards, args.out)
-
-    # --- Animation loop ---
-    print("Generating animation for baseline run...")
-    
-    video_out = args.video_out
-    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-    os.makedirs(os.path.dirname(video_out), exist_ok=True)
-    vw = cv2.VideoWriter(video_out, fourcc, 30, (1280, 720))
-
-    animated_prob = 0.0
-    masker = build_masker(args.mask_type, p=animated_prob)
-    
-    obs = env.reset()
-    current_rewards = []
-    for step in range(args.max_steps):
-        if isinstance(obs, np.ndarray) and obs.ndim == 1:
-            masked_obs = masker.maybe_apply(obs.astype(np.float32, copy=False))
-        else:
-            masked_obs = np.asarray(obs, dtype=np.float32).copy()
-            masked_obs[0] = masker.maybe_apply(masked_obs[0])
-
-        batched_obs = as_vec_obs(masked_obs)
-
-        expected_shape = original_obs_space.shape[0]
-        if batched_obs.shape[1] < expected_shape:
-            padding = np.zeros((batched_obs.shape[0], expected_shape - batched_obs.shape[1]), dtype=np.float32)
-            batched_obs = np.concatenate([batched_obs, padding], axis=1)
-
-        original_space = model.observation_space
-        padded_space = spaces.Box(low=-np.inf, high=np.inf, shape=(expected_shape,), dtype=np.float32)
-        model.observation_space = padded_space
-        model.policy.observation_space = padded_space
-
-        action, _ = model.predict(batched_obs, deterministic=True)
-
-        model.observation_space = original_space
-        model.policy.observation_space = original_space
-
-        act = np.asarray(action, dtype=np.float32)
-        if act.ndim == 1:
-            act = act[None, ...]
-        
-        step_result = env.step(act)
-        if len(step_result) == 5:
-            next_obs, reward, terminated, truncated, info = step_result
-            done = terminated | truncated
-        else:
-            next_obs, reward, done, info = step_result
-        current_rewards.append(float(np.mean(reward)))
-
-        env_frame = env.render()
-        frame = render_animated_sweep_frame(all_rewards, current_rewards, animated_prob, env_frame)
-        vw.write(frame)
-
-        obs = next_obs
-
-        if done.any():
-            obs = env.reset()
-
-    vw.release()
-    print(f"Saved animation to {video_out}")
-
-
+    title = f"{args.algo}-{args.mask_type}"
+    render_sweep_plot(all_rewards, args.out, title)
 
 if __name__ == "__main__":
     main()

@@ -1,6 +1,8 @@
 import os
 import glob
 from typing import Tuple, Optional
+import zipfile
+import pickle
 
 import numpy as np
 from gymnasium import spaces
@@ -82,9 +84,27 @@ def load_sb3_model(model_dir: str, env: VecEnv):
         "clip_range": 0.2,
     }
 
-    # 1) load without env
-    model = cls.load(zip_path, env=None, device="cpu", custom_objects=custom_objects)
-    original_obs_space = model.observation_space
+    # Load the model without an environment first to get its original observation and action spaces
+    temp_model = cls.load(zip_path, env=None, device="cpu", custom_objects=custom_objects)
+    original_model_obs_space = temp_model.observation_space
+    original_model_action_space = temp_model.action_space
+
+    # Temporarily change env.observation_space and env.action_space to match original_model_obs_space and original_model_action_space
+    original_env_obs_space = env.observation_space
+    original_env_action_space = env.action_space
+    env.observation_space = original_model_obs_space
+    env.action_space = original_model_action_space
+
+    if algo == "trpo":
+        model = cls.load(zip_path, env=env, device="cpu", custom_objects=custom_objects)
+    else:
+        model = cls.load(zip_path, env=None, device="cpu", custom_objects=custom_objects)
+    
+    # Revert env.observation_space and env.action_space
+    env.observation_space = original_env_obs_space
+    env.action_space = original_env_action_space
+
+    original_obs_space = model.observation_space # This will be the model's observation space after loading
 
     # 2) coerce observation space to float32 to avoid SB3 vectorization ambiguity
     env_obs_space_f32 = _as_float32_space(env.observation_space)
@@ -110,5 +130,35 @@ def load_sb3_model(model_dir: str, env: VecEnv):
                 pass
 
     # 4) attach env
-    model.set_env(env)
+    if algo != "trpo":
+        model.set_env(env)
+    
+    return algo, model, original_obs_space
+
+    # 2) coerce observation space to float32 to avoid SB3 vectorization ambiguity
+    env_obs_space_f32 = _as_float32_space(env.observation_space)
+
+    # 3) align spaces on model and policy
+    model.observation_space = env_obs_space_f32
+    model.action_space = env.action_space
+
+    if hasattr(model, "policy"):
+        try:
+            model.policy.observation_space = env_obs_space_f32
+        except Exception:
+            pass
+        try:
+            model.policy.action_space = env.action_space
+        except Exception:
+            pass
+        fe = getattr(model.policy, "features_extractor", None)
+        if fe is not None and hasattr(fe, "observation_space"):
+            try:
+                fe.observation_space = env_obs_space_f32
+            except Exception:
+                pass
+
+    # 4) attach env
+    if algo != "trpo":
+        model.set_env(env)
     return algo, model, original_obs_space
