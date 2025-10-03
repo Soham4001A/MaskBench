@@ -111,10 +111,10 @@ If you have legacy **Gym** checkpoints, Gymnasium will still load and warn. We a
 To evaluate all models defined in `configs/mujoco_checkpoints.yaml` across the full range of mask probabilities (0.0, 0.2, ..., 1.0) and generate plots:
 
 ```bash
-PYTHONPATH="/Users/sohamsane/Documents/Coding Projects/MaskBench" "/Users/sohamsane/Documents/Coding Projects/MaskBench/.venv/bin/python" scripts/eval_all.py 
-  --episodes 1 
-  --max-steps 1000 
-  --ckpt_root checkpoints/mujoco 
+PYTHONPATH="/Users/sohamsane/Documents/Coding Projects/MaskBench" "/Users/sohamsane/Documents/Coding Projects/MaskBench/.venv/bin/python" scripts/eval_all.py \
+  --episodes 1 \
+  --max-steps 1000 \
+  --ckpt_root checkpoints/mujoco \
   --out-dir outputs
 ```
 
@@ -133,13 +133,13 @@ PYTHONPATH="/Users/sohamsane/Documents/Coding Projects/MaskBench" "/Users/sohams
 To run a sweep for a single model, generate a plot, and also produce an animated video of the baseline run:
 
 ```bash
-PYTHONPATH="/Users/sohamsane/Documents/Coding Projects/MaskBench" "/Users/sohamsane/Documents/Coding Projects/MaskBench/.venv/bin/python" scripts/eval_visualize.py 
-  --env-id Ant-v3 
-  --algo ppo 
-  --mask-type channel 
-  --episodes 1 
-  --max-steps 1000 
-  --out outputs/Ant-v3/ppo-channel-sweep.png 
+PYTHONPATH="/Users/sohamsane/Documents/Coding Projects/MaskBench" "/Users/sohamsane/Documents/Coding Projects/MaskBench/.venv/bin/python" scripts/eval_visualize.py \
+  --env-id Ant-v3 \
+  --algo ppo \
+  --mask-type channel \
+  --episodes 1 \
+  --max-steps 1000 \
+  --out outputs/Ant-v3/ppo-channel-sweep.png \
   --video-out outputs/videos/ant_ppo_channel_baseline.mp4
 ```
 
@@ -187,7 +187,7 @@ Construction when (U_t=1):
   0, & i\in S_t, \
   1, & i\notin S_t.
   \end{cases}
-  ]
+]
 * Masked obs: (\tilde{\mathbf{x}}_t = \mathbf{x}_t \odot \mathbf{m}_t).
 
 **Expected zeros per step:** (\mathbb{E}[Z_t] = p,r,D).
@@ -219,7 +219,7 @@ Variance differs:
 * **RandomMask** adds binomial variance given (U_t=1): (Z_t,|,U_t=1 \sim \mathrm{Binomial}(D, r)), so
   [
   \mathrm{Var}(Z_t) = p, D r(1-r) + p(1-p) (rD)^2.
-  ]
+]
   This higher variance can stress policies differently than channel‑level masking.
 
 ### Mask scheduling
@@ -242,81 +242,120 @@ Masking transforms an MDP into a **POMDP**: the agent receives (\tilde{\mathbf{x
 
 ### Runtime flow
 
-```
-Env (Gymnasium MuJoCo v5 or legacy alias)  
-  → VecNormalize (optional; autoload + stats fix)  
-    → Masker.maybe_apply(x_t)  
-      → SB3 Model.predict( x̃_t )  
-        → Env.step(a_t)
-```
+For each evaluation run (either a single sweep or part of a full sweep):
 
-* **Batching**: we always send `(N,D)` `float32` observations into SB3 (`N=1`).
-* **Display**: `mask_table()` renders a compact per‑feature table comparing `orig` vs `masked` values.
+1.  **Environment Setup**: Gymnasium MuJoCo v5 (or legacy alias) is created.
+2.  **Observation Space Harmonization**: The environment's observation space is forced to `float32`.
+3.  **VecNormalize Handling**: If present, `VecNormalize` stats are loaded. If shape/dtype mismatches occur (e.g., `Ant-v3` checkpoint on `Ant-v5`), stats are reinitialized and the wrapper's observation space is aligned.
+4.  **Model Loading**: The SB3 model is loaded. To handle strict observation/action space checks during loading (especially for `TRPO` models), the environment's spaces are temporarily adjusted to match the model's original training spaces, then reverted after loading.
+5.  **Evaluation Loop**: The agent is run for `max_steps`. If an episode terminates early, the environment is reset, and the evaluation continues until `max_steps` are reached.
+6.  **Masking**: `Masker.maybe_apply(x_t)` is applied to observations before feeding them to the model.
+7.  **Observation Padding**: Observations are padded to match the input dimension expected by the loaded model's policy network.
+8.  **Action Prediction**: `SB3 Model.predict(x̃_t)` is called to get actions.
+9.  **Environment Step**: `Env.step(a_t)` is executed.
+
+*   **Batching**: we always send `(N,D)` `float32` observations into SB3 (`N=1`).
+*   **Display**: `mask_table()` renders a compact per‑feature table comparing `orig` vs `masked` values (used in `eval_visualize.py` animation).
 
 ### SB3 + Gymnasium compatibility
 
-* **Gym→Gymnasium warnings** are expected when loading Gym‑trained models; evaluation still works.
-* We **alias** legacy MuJoCo IDs (`-v2/-v3/-v4`) to `-v5` in `env_utils.py` to keep CLIs compatible.
-* We cast observation spaces to **float32** consistently to avoid SB3’s vectorization ambiguity.
+*   **Gym→Gymnasium warnings** are expected when loading Gym‑trained models; evaluation still works.
+*   We **alias** legacy MuJoCo IDs (`-v2/-v3/-v4`) to `-v5` in `env_utils.py` to keep CLIs compatible.
+*   We cast observation spaces to **float32** consistently to avoid SB3’s vectorization ambiguity.
 
 ### Legacy checkpoint adapter
 
 Real‑world frictions we address:
 
-* **VecNormalize shape mismatch** (e.g., Ant v3’s 112‑dim obs vs v5’s 105‑dim): we unwrap `VecNormalize`, compare saved stats shape to the **underlying env’s** current obs shape, and **reinitialize** stats if mismatched.
-* **Policy input width mismatch**: some legacy models hard‑code the input width. We infer the model’s expected flattened dim and **pad or truncate** incoming observations so `model.predict()` remains well‑posed. (For scientific apples‑to‑apples, prefer matching env versions at training & eval.)
+*   **VecNormalize shape/dtype mismatch** (e.g., Ant v3’s 112‑dim obs vs v5’s 105‑dim): we unwrap `VecNormalize`, compare saved stats shape/dtype to the **underlying env’s** current obs shape/dtype, and **reinitialize** stats if mismatched.
+*   **Policy input width mismatch**: some legacy models hard‑code the input width. We infer the model’s expected flattened dim and **pad** incoming observations so `model.predict()` remains well‑posed. (For scientific apples‑to‑apples, prefer matching env versions at training & eval.)
 
 ---
 
 ## CLI Usage
 
-**Basic:**
+### `scripts/eval_all.py`
+
+This script automates the evaluation of all models defined in `configs/mujoco_checkpoints.yaml` across a range of mask probabilities.
 
 ```bash
-python scripts/eval_visualize.py \
-  --env-id Hopper-v5 \
-  --algo ppo \
-  --mask-type channel \
-  --mask-prob 0.25 \
-  --episodes 3 \
-  --max-steps 2000 \
-  --out outputs/videos/hopper_p025_channel.mp4
+PYTHONPATH="/Users/sohamsane/Documents/Coding Projects/MaskBench" "/Users/sohamsane/Documents/Coding Projects/MaskBench/.venv/bin/python" scripts/eval_all.py [OPTIONS]
 ```
 
-**Randomized masking:**
+**Options:**
+
+*   `--config-file PATH`: Path to the config file (default: `configs/mujoco_checkpoints.yaml`).
+*   `--episodes INT`: Number of episodes to run for each sweep (default: 1).
+*   `--max-steps INT`: Maximum number of steps per episode (default: 1000).
+*   `--ckpt_root PATH`: Root directory for model checkpoints (default: `checkpoints/mujoco`).
+*   `--out-dir PATH`: Output directory for generated plots (default: `outputs`).
+*   `--smoke`: Run a quick smoke test (10 steps, `mask_prob=0.0`) to verify setup.
+
+**Example: Full Evaluation**
 
 ```bash
-python scripts/eval_visualize.py \
-  --env-id Ant-v5 \
+PYTHONPATH="/Users/sohamsane/Documents/Coding Projects/MaskBench" "/Users/sohamsane/Documents/Coding Projects/MaskBench/.venv/bin/python" scripts/eval_all.py \
+  --episodes 1 \
+  --max-steps 1000 \
+  --ckpt_root checkpoints/mujoco \
+  --out-dir outputs
+```
+
+**Example: Smoke Test**
+
+```bash
+PYTHONPATH="/Users/sohamsane/Documents/Coding Projects/MaskBench" "/Users/sohamsane/Documents/Coding Projects/MaskBench/.venv/bin/python" scripts/eval_all.py --smoke
+```
+
+### `scripts/eval_visualize.py`
+
+This script runs a sweep for a single model, generates a plot, and produces an animated video of the baseline run.
+
+```bash
+PYTHONPATH="/Users/sohamsane/Documents/Coding Projects/MaskBench" "/Users/sohamsane/Documents/Coding Projects/MaskBench/.venv/bin/python" scripts/eval_visualize.py [OPTIONS]
+```
+
+**Options:**
+
+*   `--env-id ENV_ID`: Environment ID (e.g., `Ant-v3`).
+*   `--algo ALGO`: Algorithm folder name (e.g., `ppo`, `sac`).
+*   `--mask-type {channel,randomized}`: Type of masking to apply (default: `channel`).
+*   `--episodes INT`: Number of episodes to run for each sweep (default: 1).
+*   `--max-steps INT`: Maximum number of steps per episode (default: 1000).
+*   `--ckpt_root PATH`: Root directory for model checkpoints (default: `checkpoints/mujoco`).
+*   `--out PATH`: Output path for the generated sweep plot (default: `outputs/sweep.png`).
+*   `--video-out PATH`: Output path for the animated video (default: `outputs/videos/preview.mp4`).
+
+**Example:**
+
+```bash
+PYTHONPATH="/Users/sohamsane/Documents/Coding Projects/MaskBench" "/Users/sohamsane/Documents/Coding Projects/MaskBench/.venv/bin/python" scripts/eval_visualize.py \
+  --env-id Ant-v3 \
   --algo ppo \
-  --mask-type randomized \
-  --mask-prob 0.6
+  --mask-type channel \
+  --episodes 1 \
+  --max-steps 1000 \
+  --out outputs/Ant-v3/ppo-channel-sweep.png \
+  --video-out outputs/videos/ant_ppo_channel_baseline.mp4
 ```
 
 **Notes**:
 
-* Default `drop_ratio` is defined inside each masker (currently `0.3`). You can change it in code or extend CLI to expose `--drop-ratio`.
-* Checkpoints are searched under `checkpoints/mujoco/<ENV>/<ALGO>/`.
+*   Default `drop_ratio` is defined inside each masker (currently `0.3`). You can change it in code or extend CLI to expose `--drop-ratio`.
+*   Checkpoints are searched under `checkpoints/mujoco/<ENV>/<ALGO>/`.
+*   **ARS Algorithm**: Currently, `ARS` policies are skipped in `eval_all.py` due to compatibility issues with `model.predict()`.
 
 ---
 
 ## Troubleshooting
 
-### “Cannot determine if the observation is vectorized…”
-
-* Ensure you’re passing **batched `float32`** observations. MaskBench uses `as_vec_obs()` and casts to `float32` before calling `model.predict()`.
-
-### VecNormalize broadcasting error `(1,105)` vs `(112,)`
-
-* Occurs when saved normalization stats don’t match the current env obs shape (e.g., `Ant-v3` checkpoint on `Ant-v5`). MaskBench unpacks `VecNormalize`, compares shapes, **reinitializes** `obs_rms/ret_rms`, and aligns wrapper `observation_space`.
-
 ### Gym vs Gymnasium warnings
 
-* Expected for old checkpoints. Prefer re‑saving models and stats under Gymnasium over time.
+*   Expected for old checkpoints. Prefer re‑saving models and stats under Gymnasium over time.
 
 ### My Ant‑v3 policy still won’t run on v5
 
-* Use the built‑in **adapter** that pads/slices to the model’s input width (already wired). For rigorous comparisons, train & eval on the **same** env version.
+*   Use the built‑in **adapter** that pads/slices to the model’s input width (already wired). For rigorous comparisons, train & eval on the **same** env version.
 
 ---
 
@@ -339,28 +378,26 @@ class MyMask:
 
 Ideas:
 
-* **BlockMask**: contiguous spans of features (structured missingness between Channel and Random).
-* **TemporalHold**: if a feature gets dropped, hold its last value for (K) steps (models delayed updates).
-* **GaussianNoise**: multiplicative or additive noise instead of hard zeros.
-* **Image‑domain masks** (for vision obs): random erasing, cutout, occlusion patches.
+*   **BlockMask**: contiguous spans of features (structured missingness between Channel and Random).
+*   **TemporalHold**: if a feature gets dropped, hold its last value for (K) steps (models delayed updates).
+*   **GaussianNoise**: multiplicative or additive noise instead of hard zeros.
+*   **Image‑domain masks** (for vision obs): random erasing, cutout, occlusion patches.
 
 ---
 
 ## Evaluation Protocols & Suggested Experiments
 
-* **Grid over (p, r)**: (p\in{0,0.25,0.5,0.75,1.0}), (r\in{0,0.1,0.3,0.5}). Report average return, time‑to‑failure, and instability (std dev across seeds).
-* **Masker ablation**: Channel vs Random at same (p,r) to isolate the effect of correlation in missingness.
-* **Curriculum schedule**: Start with small (p,r), ramp up each episode.
-* **Action divergence**: Compare (\pi(\mathbf{x}_t)) vs (\pi(\tilde{\mathbf{x}}_t)) to quantify sensitivity.
-* **Transfer**: train with masking (or DR) and test without; or vice‑versa.
+*   **Grid over (p, r)**: (p\in{0,0.25,0.5,0.75,1.0}), (r\in{0,0.1,0.3,0.5}). Report average return, time‑to‑failure, and instability (std dev across seeds).
+*   **Masker ablation**: Channel vs Random at same (p,r) to isolate the effect of correlation in missingness.
+*   **Curriculum schedule**: Start with small (p,r), ramp up each episode.
+*   **Action divergence**: Compare (\pi(\mathbf{x}_t)) vs (\pi(\tilde{\mathbf{x}}_t)) to quantify sensitivity.
+*   **Transfer**: train with masking (or DR) and test without; or vice‑versa.
 
 ---
 
 ## Roadmap
 
-* Add **`--drop-ratio`** CLI flag and per‑masker overrides.
-* Integrate **CleanRL** policies and Atari/classic‑control benchmarks.
-* Add **Dict/visual observations** support and pixel‑domain maskers.
-* Ship a **metrics module** (action divergence, instability, recovery time).
-* Optional **RNN policy** wrappers to assess memory augmentation under POMDP masking.
-
+*   Integrate **CleanRL** policies and Atari/classic‑control benchmarks.
+*   Add **Dict/visual observations** support and pixel‑domain maskers.
+*   Ship a **metrics module** (action divergence, instability, recovery time).
+*   Optional **RNN policy** wrappers to assess memory augmentation under POMDP masking).
